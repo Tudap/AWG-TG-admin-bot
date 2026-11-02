@@ -1,0 +1,15 @@
+[Unit]
+Description=AmneziaWG Telegram Admin Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/awg-bot
+ExecStart=/root/.bun/bin/bun run src/index.ts
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/awg-bot/.env
+
+[Install]
+WantedBy=multi-user.target
