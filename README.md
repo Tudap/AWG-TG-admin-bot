@@ -66,7 +66,7 @@
 ## ⚡ Архитектура Zero-DB
 
 В проекте **принципиально не используются внешние СУБД** (ни SQLite, ни PostgreSQL, ни Redis):
-- Единственным источником истины (Single Source of Truth) является системный скрипт `/usr/local/bin/manage_amneziawg.sh`.
+- Единственным источником истины (Single Source of Truth) является системный скрипт `/root/awg/manage_amneziawg.sh` (или `/usr/local/bin/manage_amneziawg.sh`).
 - Все операции чтения и модификации выполняются напрямую через Bun Shell (`Bun.$`) с флагом `--json`.
 - Это исключает рассинхронизацию базы данных с состоянием WireGuard-интерфейса, не требует миграций и гарантирует минимальное потребление RAM (менее 30-40 MB).
 
@@ -94,7 +94,7 @@ awg-bot/
 ## 🖥 Требования к серверу
 
 1. **ОС:** Ubuntu 20.04/22.04/24.04 LTS или Debian 11/12.
-2. **Скрипт управления AmneziaWG:** Установленный скрипт от [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) по пути `/usr/local/bin/manage_amneziawg.sh`.
+2. **Скрипт управления AmneziaWG:** Установленный скрипт от [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) по пути `/root/awg/manage_amneziawg.sh` (стандартный путь установки) или `/usr/local/bin/manage_amneziawg.sh`.
 3. **Среда выполнения:** [Bun](https://bun.sh/) (версия 1.0.0 или выше).
 4. **Telegram:** Зарегистрированный бот через [@BotFather](https://t.me/BotFather) и ваш цифровой ID из [@userinfobot](https://t.me/userinfobot).
 
@@ -144,8 +144,8 @@ BOT_TOKEN=1234567890:AAExampleSecretTokenHere
 # Ваш числовой Telegram User ID (узнать в @userinfobot)
 ADMIN_ID=123456789
 
-# Путь к скрипту управления AmneziaWG
-AWG_SCRIPT=/usr/local/bin/manage_amneziawg.sh
+# Путь к скрипту управления AmneziaWG (по умолчанию /root/awg/manage_amneziawg.sh)
+AWG_SCRIPT=/root/awg/manage_amneziawg.sh
 
 # Публичный IPv4-адрес или домен вашего сервера (для теста Globalping)
 SERVER_HOST=198.51.100.1
@@ -237,8 +237,9 @@ journalctl -u awg-bot -f
    - Убедитесь, что ваш Telegram User ID точно совпадает со значением `ADMIN_ID` в файле `.env`.
    - Проверьте логи через `journalctl -u awg-bot -f`. При несовпадении ID бот молча отсекает запросы.
 
-2. **Ошибка при вызове команд AWG (`command not found`):**
-   - Убедитесь, что скрипт `manage_amneziawg.sh` доступен по указанному в `AWG_SCRIPT` пути и имеет права на исполнение (`chmod +x /usr/local/bin/manage_amneziawg.sh`).
+2. **Ошибка при вызове команд AWG (`command not found` или `No such file or directory`):**
+   - Убедитесь, что скрипт `manage_amneziawg.sh` доступен по указанному в `AWG_SCRIPT` пути и имеет права на исполнение (`chmod +x /root/awg/manage_amneziawg.sh`).
+   - При стандартной установке [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) под пользователем root скрипт и конфигурации находятся в `/root/awg/` (`~/awg/`). Бот автоматически ищет скрипт по путям `/root/awg/manage_amneziawg.sh`, `/usr/local/bin/manage_amneziawg.sh`, `~/awg/manage_amneziawg.sh` и запускает его в рабочей директории скрипта, гарантируя корректное подключение вспомогательного файла `awg_common.sh` и поиск клиентских `.conf`.
 
 3. **Ошибка отправки QR-кода:**
    - Убедитесь, что клиентская конфигурация содержит валидные текстовые данные. QR-генерация происходит в памяти через `qrcode.toBuffer` и не требует записи на диск.

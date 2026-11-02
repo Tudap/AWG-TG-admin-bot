@@ -1,7 +1,70 @@
 import { $ } from "bun";
+import fs from "node:fs";
+import path from "node:path";
 import { patchConfig } from "./patcher";
 
-const SCRIPT = process.env.AWG_SCRIPT || "/usr/local/bin/manage_amneziawg.sh";
+/**
+ * Resolves the path to manage_amneziawg.sh script.
+ * Prefers AWG_SCRIPT from env if file exists, then checks typical installation locations:
+ * - /root/awg/manage_amneziawg.sh (standard location for bivlked/amneziawg-installer)
+ * - ~/awg/manage_amneziawg.sh
+ * - /usr/local/bin/manage_amneziawg.sh
+ * - /opt/awg/manage_amneziawg.sh
+ * - ./manage_amneziawg.sh
+ */
+export function getScriptPath(): string {
+  const envPath = process.env.AWG_SCRIPT;
+  if (envPath && fs.existsSync(envPath)) {
+    return envPath;
+  }
+
+  const home = process.env.HOME || "/root";
+  const candidates = [
+    "/root/awg/manage_amneziawg.sh",
+    path.join(home, "awg", "manage_amneziawg.sh"),
+    "/usr/local/bin/manage_amneziawg.sh",
+    "/opt/awg/manage_amneziawg.sh",
+    path.resolve("manage_amneziawg.sh"),
+    path.resolve("awg/manage_amneziawg.sh"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      if (envPath && envPath !== candidate) {
+        console.warn(
+          `[AWG] Заданный AWG_SCRIPT="${envPath}" не найден на диске. Автоматически найден и используется путь: "${candidate}"`
+        );
+      }
+      return candidate;
+    }
+  }
+
+  // Fallback to envPath if defined, or default standard installer path
+  return envPath || "/root/awg/manage_amneziawg.sh";
+}
+
+/**
+ * Parses JSON output from the management script, handling any potential
+ * bash warnings or banners printed before the JSON payload.
+ */
+export function parseJsonOutput(stdout: string): any {
+  const trimmed = stdout.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    for (let i = 0; i < trimmed.length; i++) {
+      const char = trimmed[i];
+      if (char === "{" || char === "[") {
+        try {
+          return JSON.parse(trimmed.slice(i));
+        } catch {
+          // Continue scanning if this wasn't the start of valid JSON
+        }
+      }
+    }
+    throw new Error(`Не удалось распарсить JSON из вывода скрипта: ${trimmed}`);
+  }
+}
 
 export interface AwgClient {
   name: string;
@@ -46,8 +109,13 @@ export interface AwgBackupResult {
 
 /**
  * Resolves the absolute path to a client's .conf file on disk.
+ * Prioritizes script directory (e.g. /root/awg/<name>.conf) where bivlked installer places configs.
  */
-async function resolveConfigPath(name: string, res?: any): Promise<string> {
+export async function resolveConfigPath(
+  name: string,
+  res?: any,
+  scriptDir?: string
+): Promise<string> {
   const fromRes =
     res?.config_path ||
     res?.path ||
@@ -55,18 +123,27 @@ async function resolveConfigPath(name: string, res?: any): Promise<string> {
     res?.config_file ||
     res?.configFile;
 
+  const baseDir = scriptDir || path.dirname(getScriptPath());
+  const home = process.env.HOME || "/root";
+
   if (typeof fromRes === "string" && fromRes.trim().length > 0) {
-    return fromRes.trim();
+    const p = fromRes.trim();
+    if (path.isAbsolute(p)) return p;
+    return path.resolve(baseDir, p);
   }
 
   // Common locations used by bivlked/amneziawg-installer and standard wg
   const candidates = [
+    path.join(baseDir, `${name}.conf`),
+    path.join(baseDir, "clients", `${name}.conf`),
+    `/root/awg/${name}.conf`,
+    path.join(home, "awg", `${name}.conf`),
     `/etc/amnezia/amneziawg/clients/${name}.conf`,
+    path.join(home, `${name}.conf`),
     `/root/${name}.conf`,
     `/etc/wireguard/clients/${name}.conf`,
     `/etc/amneziawg/clients/${name}.conf`,
-    `/home/${name}.conf`,
-    `./${name}.conf`,
+    path.resolve(`${name}.conf`),
   ];
 
   for (const candidate of candidates) {
@@ -75,8 +152,8 @@ async function resolveConfigPath(name: string, res?: any): Promise<string> {
     }
   }
 
-  // Fallback to standard installer path
-  return `/etc/amnezia/amneziawg/clients/${name}.conf`;
+  // Fallback to script directory
+  return path.join(baseDir, `${name}.conf`);
 }
 
 /**
@@ -85,14 +162,18 @@ async function resolveConfigPath(name: string, res?: any): Promise<string> {
  * Reads created config, applies patchConfig, writes back to disk, and returns the result.
  */
 export async function add(name: string, expires?: string): Promise<AwgConfigResult> {
-  let res: any;
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+
+  let out: string;
   if (expires) {
-    res = await $`${SCRIPT} add ${name} --expires=${expires} --json`.json();
+    out = await $`${script} add ${name} --expires=${expires} --json`.cwd(scriptDir).text();
   } else {
-    res = await $`${SCRIPT} add ${name} --json`.json();
+    out = await $`${script} add ${name} --json`.cwd(scriptDir).text();
   }
 
-  const configPath = await resolveConfigPath(name, res);
+  const res = parseJsonOutput(out);
+  const configPath = await resolveConfigPath(name, res, scriptDir);
   let rawConfig = "";
 
   if (await Bun.file(configPath).exists()) {
@@ -121,18 +202,35 @@ export async function add(name: string, expires?: string): Promise<AwgConfigResu
  * Calls `manage_amneziawg.sh remove <name> --json`.
  */
 export async function remove(name: string): Promise<any> {
-  const res = await $`${SCRIPT} remove ${name} --json`.json();
-  return res;
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+  const out = await $`${script} remove ${name} --json`.cwd(scriptDir).text();
+  return parseJsonOutput(out);
 }
 
 /**
- * Regenerates / re-issues configuration for an existing client.
+ * Regenerates / re-issues configuration for an existing client,
+ * or retrieves and re-patches existing configuration on disk.
  * Calls `manage_amneziawg.sh regen <name> --json`.
  * Reads config, applies patchConfig, writes back to disk, and returns the result.
  */
 export async function regen(name: string): Promise<AwgConfigResult> {
-  const res = (await $`${SCRIPT} regen ${name} --json`.json()) as any;
-  const configPath = await resolveConfigPath(name, res);
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+
+  let res: any = null;
+  try {
+    const out = await $`${script} regen ${name} --json`.cwd(scriptDir).text();
+    res = parseJsonOutput(out);
+  } catch (err: any) {
+    // If CLI does not support 'regen' or failed, check if the config already exists on disk
+    const existingCandidate = await resolveConfigPath(name, null, scriptDir);
+    if (!(await Bun.file(existingCandidate).exists())) {
+      throw err;
+    }
+  }
+
+  const configPath = await resolveConfigPath(name, res, scriptDir);
   let rawConfig = "";
 
   if (await Bun.file(configPath).exists()) {
@@ -141,7 +239,7 @@ export async function regen(name: string): Promise<AwgConfigResult> {
     rawConfig = String(res.config || res.content);
   } else {
     throw new Error(
-      `Не удалось прочитать перевыпущенный файл конфигурации для "${name}" по пути "${configPath}".`
+      `Не удалось прочитать файл конфигурации для "${name}" по пути "${configPath}".`
     );
   }
 
@@ -160,7 +258,10 @@ export async function regen(name: string): Promise<AwgConfigResult> {
  * Retrieves the list of clients from `manage_amneziawg.sh list --json`.
  */
 export async function list(): Promise<AwgClient[]> {
-  const res = (await $`${SCRIPT} list --json`.json()) as any;
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+  const out = await $`${script} list --json`.cwd(scriptDir).text();
+  const res = parseJsonOutput(out);
   let rawList: any[] = [];
 
   if (Array.isArray(res)) {
@@ -185,7 +286,10 @@ export async function list(): Promise<AwgClient[]> {
  * Retrieves traffic and interface stats from `manage_amneziawg.sh stats --json`.
  */
 export async function stats(): Promise<AwgStatsResult> {
-  const res = (await $`${SCRIPT} stats --json`.json()) as any;
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+  const out = await $`${script} stats --json`.cwd(scriptDir).text();
+  const res = parseJsonOutput(out);
 
   if (Array.isArray(res)) {
     return {
@@ -214,7 +318,9 @@ export async function stats(): Promise<AwgStatsResult> {
  * Returns plaintext output.
  */
 export async function check(): Promise<string> {
-  const text = await $`${SCRIPT} check`.text();
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+  const text = await $`${script} check`.cwd(scriptDir).text();
   return text;
 }
 
@@ -223,9 +329,12 @@ export async function check(): Promise<string> {
  * Returns the path to the created .tar.gz archive.
  */
 export async function backup(): Promise<AwgBackupResult> {
-  const res = (await $`${SCRIPT} backup --json`.json()) as any;
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+  const out = await $`${script} backup --json`.cwd(scriptDir).text();
+  const res = parseJsonOutput(out);
 
-  const backupPath =
+  const rawPath =
     res?.backup_path ||
     res?.path ||
     res?.file ||
@@ -233,15 +342,26 @@ export async function backup(): Promise<AwgBackupResult> {
     res?.backupPath ||
     res?.archive_path;
 
-  if (!backupPath || typeof backupPath !== "string") {
+  if (!rawPath || typeof rawPath !== "string") {
     throw new Error(
       `Скрипт бэкапа не вернул путь к архиву: ${JSON.stringify(res)}`
     );
   }
 
-  const trimmedPath = backupPath.trim();
+  let trimmedPath = rawPath.trim();
+  if (!path.isAbsolute(trimmedPath)) {
+    trimmedPath = path.resolve(scriptDir, trimmedPath);
+  }
+
   if (!(await Bun.file(trimmedPath).exists())) {
-    throw new Error(`Файл бэкапа не найден на диске: ${trimmedPath}`);
+    // Check if archive filename was created in scriptDir
+    const filename = path.basename(trimmedPath);
+    const candidate = path.join(scriptDir, filename);
+    if (await Bun.file(candidate).exists()) {
+      trimmedPath = candidate;
+    } else {
+      throw new Error(`Файл бэкапа не найден на диске: ${trimmedPath}`);
+    }
   }
 
   return {

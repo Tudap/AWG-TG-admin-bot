@@ -744,6 +744,7 @@ bot.catch((err) => {
 console.log("🚀 Запуск AmneziaWG Telegram Admin Bot...");
 console.log(`👤 Разрешенный ADMIN_ID: ${ADMIN_ID}`);
 console.log(`🌐 Хост проверки доступности: ${SERVER_HOST}`);
+console.log(`🔧 Скрипт AmneziaWG: ${awg.getScriptPath()}`);
 
 bot.start({
   onStart: (botInfo) => {
