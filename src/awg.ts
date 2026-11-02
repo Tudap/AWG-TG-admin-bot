@@ -101,6 +101,49 @@ export function parseJsonOutput(stdout: string): any {
   }
 }
 
+/**
+ * Parses plaintext table output produced by `manage_amneziawg.sh stats`:
+ *
+ * Имя       | IP       | Получено  | Отправлено | Последний handshake | Статус
+ * ---------------------------------------------------------------------------------
+ * my_phone  | 10.9.9.2 | 2.63 GiB  | 22.68 GiB  | 2026-11-02 09:30:03 | Активен
+ */
+export function parseStatsText(text: string): AwgStatsPeer[] {
+  const peers: AwgStatsPeer[] = [];
+  const lines = text.split("\n");
+
+  for (const line of lines) {
+    if (!line.includes("|")) continue;
+    const parts = line.split("|").map((p) => p.trim());
+    if (parts.length < 5) continue;
+
+    const [colName, colIp, colRx, colTx, colHandshake, colStatus] = parts;
+
+    // Skip table header and divider rows
+    if (
+      colName.toLowerCase().includes("имя") ||
+      colName.toLowerCase().includes("name") ||
+      colName.startsWith("-") ||
+      colName.includes("===")
+    ) {
+      continue;
+    }
+
+    if (colName && colIp) {
+      peers.push({
+        name: colName,
+        ip: colIp,
+        transfer_rx: colRx || "0 B",
+        transfer_tx: colTx || "0 B",
+        latest_handshake: colHandshake || "никогда",
+        status: colStatus || "Активен",
+      });
+    }
+  }
+
+  return peers;
+}
+
 export interface AwgClient {
   name: string;
   ip?: string;
@@ -119,13 +162,15 @@ export interface AwgConfigResult {
 }
 
 export interface AwgStatsPeer {
-  name?: string;
+  name: string;
+  ip?: string;
   public_key?: string;
   endpoint?: string;
   allowed_ips?: string;
   latest_handshake?: number | string;
   transfer_rx?: number | string;
   transfer_tx?: number | string;
+  status?: string;
   [key: string]: any;
 }
 
@@ -140,6 +185,42 @@ export interface AwgStatsResult {
 export interface AwgBackupResult {
   backupPath: string;
   raw: any;
+}
+
+function normalizePeer(raw: any): AwgStatsPeer {
+  const name = raw.name || raw.client || raw.user || raw.peer || "unknown";
+  const rx =
+    raw.transfer_rx ??
+    raw.received ??
+    raw.rx ??
+    raw.bytes_rcvd ??
+    raw.download ??
+    "0 B";
+  const tx =
+    raw.transfer_tx ??
+    raw.sent ??
+    raw.tx ??
+    raw.bytes_sent ??
+    raw.upload ??
+    "0 B";
+  const handshake =
+    raw.latest_handshake ??
+    raw.last_handshake ??
+    raw.handshake ??
+    raw.latestHandshake ??
+    "никогда";
+  const ip = raw.ip ?? raw.address ?? raw.client_ip ?? raw.allowed_ips;
+  const status = raw.status;
+
+  return {
+    ...raw,
+    name,
+    ip,
+    transfer_rx: rx,
+    transfer_tx: tx,
+    latest_handshake: handshake,
+    status,
+  };
 }
 
 /**
@@ -182,7 +263,7 @@ export async function resolveConfigPath(
   ];
 
   for (const candidate of candidates) {
-    if (await Bun.file(candidate).exists()) {
+    if (fs.existsSync(candidate) || (await Bun.file(candidate).exists())) {
       return candidate;
     }
   }
@@ -204,12 +285,25 @@ export async function add(name: string, expires?: string): Promise<AwgConfigResu
     ? ["add", name, `--expires=${expires}`, "--json"]
     : ["add", name, "--json"];
 
-  const out = await execAwg(args);
-  const res = parseJsonOutput(out);
+  let out = "";
+  let res: any = null;
+  try {
+    out = await execAwg(args);
+    res = parseJsonOutput(out);
+  } catch (err: any) {
+    // If json parsing failed but user was created, check for created file
+    const candidatePath = await resolveConfigPath(name, null, scriptDir);
+    if (!fs.existsSync(candidatePath) && !(await Bun.file(candidatePath).exists())) {
+      throw err;
+    }
+  }
+
   const configPath = await resolveConfigPath(name, res, scriptDir);
   let rawConfig = "";
 
-  if (await Bun.file(configPath).exists()) {
+  if (fs.existsSync(configPath)) {
+    rawConfig = fs.readFileSync(configPath, "utf-8");
+  } else if (await Bun.file(configPath).exists()) {
     rawConfig = await Bun.file(configPath).text();
   } else if (res?.config || res?.content) {
     rawConfig = String(res.config || res.content);
@@ -220,7 +314,11 @@ export async function add(name: string, expires?: string): Promise<AwgConfigResu
   }
 
   const patched = patchConfig(rawConfig);
-  await Bun.write(configPath, patched);
+  try {
+    fs.writeFileSync(configPath, patched, "utf-8");
+  } catch (writeErr) {
+    await Bun.write(configPath, patched).catch(() => {});
+  }
 
   return {
     client: name,
@@ -236,7 +334,11 @@ export async function add(name: string, expires?: string): Promise<AwgConfigResu
  */
 export async function remove(name: string): Promise<any> {
   const out = await execAwg(["remove", name, "--json"]);
-  return parseJsonOutput(out);
+  try {
+    return parseJsonOutput(out);
+  } catch {
+    return { status: "ok", raw: out };
+  }
 }
 
 /**
@@ -256,7 +358,10 @@ export async function regen(name: string): Promise<AwgConfigResult> {
   } catch (err: any) {
     // If CLI does not support 'regen' or failed, check if the config already exists on disk
     const existingCandidate = await resolveConfigPath(name, null, scriptDir);
-    if (!(await Bun.file(existingCandidate).exists())) {
+    if (
+      !fs.existsSync(existingCandidate) &&
+      !(await Bun.file(existingCandidate).exists())
+    ) {
       throw err;
     }
   }
@@ -264,7 +369,9 @@ export async function regen(name: string): Promise<AwgConfigResult> {
   const configPath = await resolveConfigPath(name, res, scriptDir);
   let rawConfig = "";
 
-  if (await Bun.file(configPath).exists()) {
+  if (fs.existsSync(configPath)) {
+    rawConfig = fs.readFileSync(configPath, "utf-8");
+  } else if (await Bun.file(configPath).exists()) {
     rawConfig = await Bun.file(configPath).text();
   } else if (res?.config || res?.content) {
     rawConfig = String(res.config || res.content);
@@ -275,7 +382,11 @@ export async function regen(name: string): Promise<AwgConfigResult> {
   }
 
   const patched = patchConfig(rawConfig);
-  await Bun.write(configPath, patched);
+  try {
+    fs.writeFileSync(configPath, patched, "utf-8");
+  } catch (writeErr) {
+    await Bun.write(configPath, patched).catch(() => {});
+  }
 
   return {
     client: name,
@@ -312,31 +423,56 @@ export async function list(): Promise<AwgClient[]> {
 }
 
 /**
- * Retrieves traffic and interface stats from `manage_amneziawg.sh stats --json`.
+ * Retrieves traffic and interface stats from `manage_amneziawg.sh stats`.
+ * Robust against JSON, mixed output, or human-readable table output.
  */
 export async function stats(): Promise<AwgStatsResult> {
-  const out = await execAwg(["stats", "--json"]);
-  const res = parseJsonOutput(out);
+  let out = "";
+  try {
+    out = await execAwg(["stats", "--json"]);
+  } catch {
+    out = await execAwg(["stats"]);
+  }
 
-  if (Array.isArray(res)) {
-    return {
-      peers: res.map((item) => ({
-        ...item,
-        name: item.name || item.client || item.user,
-      })),
-      raw: res,
-    };
+  // 1. Try to parse JSON output
+  try {
+    const res = parseJsonOutput(out);
+    let rawPeers: any[] = [];
+
+    if (Array.isArray(res)) {
+      rawPeers = res;
+    } else if (res && Array.isArray(res.peers)) {
+      rawPeers = res.peers;
+    } else if (res && Array.isArray(res.clients)) {
+      rawPeers = res.clients;
+    }
+
+    if (rawPeers.length > 0) {
+      return {
+        interface: res?.interface || res?.device || "awg0",
+        public_key: res?.public_key || res?.publicKey,
+        listening_port: res?.listening_port || res?.port,
+        peers: rawPeers.map(normalizePeer),
+        raw: res,
+      };
+    }
+  } catch {
+    // Not valid JSON, proceed to table parsing
+  }
+
+  // 2. Parse text table output (as displayed by manage_amneziawg.sh stats)
+  let tablePeers = parseStatsText(out);
+  if (tablePeers.length === 0) {
+    try {
+      const textOut = await execAwg(["stats"]);
+      tablePeers = parseStatsText(textOut);
+    } catch {}
   }
 
   return {
-    interface: res?.interface || res?.device || "awg0",
-    public_key: res?.public_key || res?.publicKey,
-    listening_port: res?.listening_port || res?.port,
-    peers: (res?.peers || []).map((p: any) => ({
-      ...p,
-      name: p.name || p.client || p.user,
-    })),
-    raw: res,
+    interface: "awg0",
+    peers: tablePeers,
+    raw: out,
   };
 }
 
@@ -378,11 +514,11 @@ export async function backup(): Promise<AwgBackupResult> {
     trimmedPath = path.resolve(scriptDir, trimmedPath);
   }
 
-  if (!(await Bun.file(trimmedPath).exists())) {
+  if (!fs.existsSync(trimmedPath) && !(await Bun.file(trimmedPath).exists())) {
     // Check if archive filename was created in scriptDir
     const filename = path.basename(trimmedPath);
     const candidate = path.join(scriptDir, filename);
-    if (await Bun.file(candidate).exists()) {
+    if (fs.existsSync(candidate) || (await Bun.file(candidate).exists())) {
       trimmedPath = candidate;
     } else {
       throw new Error(`Файл бэкапа не найден на диске: ${trimmedPath}`);

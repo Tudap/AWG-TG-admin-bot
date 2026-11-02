@@ -56,8 +56,16 @@ bot.use(async (ctx, next) => {
 // Formatting Helpers
 // -----------------------------------------------------------------------------
 function formatBytes(bytes: number | string | undefined): string {
+  if (!bytes) return "0 B";
+  if (typeof bytes === "string") {
+    const trimmed = bytes.trim();
+    // If it already has human-readable units (e.g. "2.63 GiB", "16.12 GiB", "0 B")
+    if (/[a-zA-Zа-яА-Я]/.test(trimmed)) {
+      return trimmed;
+    }
+  }
   const num = Number(bytes);
-  if (!bytes || isNaN(num) || num <= 0) return "0 B";
+  if (isNaN(num) || num <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.min(Math.floor(Math.log(num) / Math.log(1024)), units.length - 1);
   const formatted = (num / Math.pow(1024, i)).toFixed(1);
@@ -66,8 +74,33 @@ function formatBytes(bytes: number | string | undefined): string {
 
 function formatHandshake(timestamp: number | string | undefined): string {
   if (!timestamp) return "Никогда";
+  if (typeof timestamp === "string") {
+    const trimmed = timestamp.trim();
+    if (
+      trimmed.toLowerCase() === "никогда" ||
+      trimmed === "0" ||
+      trimmed === "-" ||
+      trimmed === "never"
+    ) {
+      return "Никогда";
+    }
+    // Parse datetime like "2026-11-02 09:30:03" or ISO string
+    const parsedDate = Date.parse(trimmed.replace(" ", "T"));
+    if (!isNaN(parsedDate)) {
+      const diffSec = Math.floor((Date.now() - parsedDate) / 1000);
+      if (diffSec < 0 || diffSec < 60) return `${diffSec < 0 ? 0 : diffSec} сек. назад`;
+      const diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60) return `${diffMin} мин. назад`;
+      const diffHours = Math.floor(diffMin / 60);
+      if (diffHours < 24) return `${diffHours} ч. назад`;
+      const diffDays = Math.floor(diffHours / 24);
+      return `${diffDays} дн. назад`;
+    }
+    return trimmed;
+  }
+
   const num = Number(timestamp);
-  if (isNaN(num) || num <= 0) return String(timestamp);
+  if (isNaN(num) || num <= 0) return "Никогда";
 
   // If timestamp is in seconds vs milliseconds
   const tsMs = num < 10000000000 ? num * 1000 : num;
@@ -380,12 +413,13 @@ async function renderClientDetails(ctx: MyContext, clientName: string) {
     const peerStats = (statsData.peers || []).find(
       (p) =>
         p.name === clientName ||
-        (client?.ip && p.allowed_ips && p.allowed_ips.includes(client.ip))
+        (client?.ip && p.allowed_ips && p.allowed_ips.includes(client.ip)) ||
+        (client?.ip && p.ip && p.ip === client.ip)
     );
 
     let text = `👤 *Клиент:* \`${clientName}\`\n\n`;
-    text += `📍 *IP адрес:* \`${client?.ip || "не назначен"}\`\n`;
-    text += `🚦 *Статус:* \`${client?.status || "active"}\`\n`;
+    text += `📍 *IP адрес:* \`${client?.ip || peerStats?.ip || "не назначен"}\`\n`;
+    text += `🚦 *Статус:* \`${peerStats?.status || client?.status || "active"}\`\n`;
     text += `⏱ *Срок действия:* \`${client?.expires_at || "Бессрочно"}\`\n`;
 
     if (client?.created_at) {
@@ -444,8 +478,15 @@ async function renderStats(ctx: MyContext) {
         const rx = formatBytes(p.transfer_rx);
         const tx = formatBytes(p.transfer_tx);
         const handshake = formatHandshake(p.latest_handshake);
+        const statusBadge =
+          p.status?.toLowerCase().includes("актив")
+            ? "🟢"
+            : p.status?.toLowerCase().includes("недав")
+            ? "🟡"
+            : "⚪️";
 
-        text += `• *${name}*\n`;
+        const ipBadge = p.ip ? ` \`(${p.ip})\`` : "";
+        text += `• *${name}*${ipBadge} ${statusBadge}\n`;
         text += `  ⬇️ ${rx} | ⬆️ ${tx} | 🕒 ${handshake}\n`;
       }
     }

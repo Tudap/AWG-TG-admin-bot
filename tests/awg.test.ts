@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { getScriptPath, parseJsonOutput, resolveConfigPath, isUserRoot } from "../src/awg";
+import {
+  getScriptPath,
+  parseJsonOutput,
+  parseStatsText,
+  resolveConfigPath,
+  isUserRoot,
+} from "../src/awg";
 import { patchConfig } from "../src/patcher";
 import path from "node:path";
 import os from "node:os";
@@ -8,6 +14,7 @@ describe("AWG Paths & Helpers", () => {
   it("should check root user status", () => {
     expect(typeof isUserRoot()).toBe("boolean");
   });
+
   it("should parse standard JSON output", () => {
     const raw = JSON.stringify({ status: "ok", clients: [] });
     const parsed = parseJsonOutput(raw);
@@ -20,6 +27,35 @@ describe("AWG Paths & Helpers", () => {
     const parsed = parseJsonOutput(bannerOutput);
     expect(parsed.status).toBe("success");
     expect(parsed.count).toBe(2);
+  });
+
+  it("should parse stats table from manage_amneziawg.sh output", () => {
+    const tableOutput = `
+[2026-11-02 09:30:44] INFO: Проверка зависимостей...
+[2026-11-02 09:30:44] INFO: Статистика трафика клиентов:
+
+Имя       | IP       | Получено  | Отправлено | Последний handshake | Статус
+---------------------------------------------------------------------------------
+my_phone  | 10.9.9.2 | 2.63 GiB  | 22.68 GiB  | 2026-11-02 09:30:03 | Активен
+my_laptop | 10.9.9.3 | 3.01 GiB  | 14.61 GiB  | 2026-11-02 09:30:20 | Активен
+test_user | 10.9.9.7 | 0 B       | 0 B        | никогда             | Неактивен
+
+[2026-11-02 09:30:44] INFO: Итого: Получено 5.64 GiB, Отправлено 37.29 GiB
+`;
+
+    const peers = parseStatsText(tableOutput);
+    expect(peers.length).toBe(3);
+
+    expect(peers[0].name).toBe("my_phone");
+    expect(peers[0].ip).toBe("10.9.9.2");
+    expect(peers[0].transfer_rx).toBe("2.63 GiB");
+    expect(peers[0].transfer_tx).toBe("22.68 GiB");
+    expect(peers[0].latest_handshake).toBe("2026-11-02 09:30:03");
+    expect(peers[0].status).toBe("Активен");
+
+    expect(peers[2].name).toBe("test_user");
+    expect(peers[2].transfer_rx).toBe("0 B");
+    expect(peers[2].status).toBe("Неактивен");
   });
 
   it("should resolve default script path to /root/awg/manage_amneziawg.sh", () => {
