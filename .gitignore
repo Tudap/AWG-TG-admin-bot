@@ -21,3 +21,11 @@ yarn-error.log*
 .DS_Store
 .idea/
 .vscode/
+
+# AI development rules and context
+.cursorrules
+.cursor/
+AGENTS.md
+CLAUDE.md
+PRD.md
+.claude/
