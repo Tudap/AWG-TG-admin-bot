@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { getScriptPath, parseJsonOutput, resolveConfigPath } from "../src/awg";
+import { getScriptPath, parseJsonOutput, resolveConfigPath, isUserRoot } from "../src/awg";
 import { patchConfig } from "../src/patcher";
 import path from "node:path";
 import os from "node:os";
 
 describe("AWG Paths & Helpers", () => {
+  it("should check root user status", () => {
+    expect(typeof isUserRoot()).toBe("boolean");
+  });
   it("should parse standard JSON output", () => {
     const raw = JSON.stringify({ status: "ok", clients: [] });
     const parsed = parseJsonOutput(raw);

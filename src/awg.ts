@@ -4,6 +4,13 @@ import path from "node:path";
 import { patchConfig } from "./patcher";
 
 /**
+ * Checks if current process is running as root user (uid === 0).
+ */
+export function isUserRoot(): boolean {
+  return typeof process.getuid === "function" ? process.getuid() === 0 : true;
+}
+
+/**
  * Resolves the path to manage_amneziawg.sh script.
  * Prefers AWG_SCRIPT from env if file exists, then checks typical installation locations:
  * - /root/awg/manage_amneziawg.sh (standard location for bivlked/amneziawg-installer)
@@ -41,6 +48,34 @@ export function getScriptPath(): string {
 
   // Fallback to envPath if defined, or default standard installer path
   return envPath || "/root/awg/manage_amneziawg.sh";
+}
+
+/**
+ * Executes manage_amneziawg.sh with given arguments in its working directory.
+ * If running as non-root, automatically prepends sudo unless disabled.
+ * Detailed stderr/stdout is attached to error messages for debugging.
+ */
+export async function execAwg(args: string[]): Promise<string> {
+  const script = getScriptPath();
+  const scriptDir = path.dirname(script);
+  const isRoot = isUserRoot();
+  const useSudo = !isRoot && process.env.AWG_USE_SUDO !== "false";
+
+  try {
+    if (useSudo) {
+      return await $`sudo ${script} ${args}`.cwd(scriptDir).text();
+    } else {
+      return await $`${script} ${args}`.cwd(scriptDir).text();
+    }
+  } catch (err: any) {
+    const stderr = err?.stderr?.toString?.()?.trim();
+    const stdout = err?.stdout?.toString?.()?.trim();
+    const details = [stderr, stdout].filter(Boolean).join("\n");
+    if (details) {
+      throw new Error(`${err.message || "Command failed"}:\n${details}`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -165,13 +200,11 @@ export async function add(name: string, expires?: string): Promise<AwgConfigResu
   const script = getScriptPath();
   const scriptDir = path.dirname(script);
 
-  let out: string;
-  if (expires) {
-    out = await $`${script} add ${name} --expires=${expires} --json`.cwd(scriptDir).text();
-  } else {
-    out = await $`${script} add ${name} --json`.cwd(scriptDir).text();
-  }
+  const args = expires
+    ? ["add", name, `--expires=${expires}`, "--json"]
+    : ["add", name, "--json"];
 
+  const out = await execAwg(args);
   const res = parseJsonOutput(out);
   const configPath = await resolveConfigPath(name, res, scriptDir);
   let rawConfig = "";
@@ -202,9 +235,7 @@ export async function add(name: string, expires?: string): Promise<AwgConfigResu
  * Calls `manage_amneziawg.sh remove <name> --json`.
  */
 export async function remove(name: string): Promise<any> {
-  const script = getScriptPath();
-  const scriptDir = path.dirname(script);
-  const out = await $`${script} remove ${name} --json`.cwd(scriptDir).text();
+  const out = await execAwg(["remove", name, "--json"]);
   return parseJsonOutput(out);
 }
 
@@ -220,7 +251,7 @@ export async function regen(name: string): Promise<AwgConfigResult> {
 
   let res: any = null;
   try {
-    const out = await $`${script} regen ${name} --json`.cwd(scriptDir).text();
+    const out = await execAwg(["regen", name, "--json"]);
     res = parseJsonOutput(out);
   } catch (err: any) {
     // If CLI does not support 'regen' or failed, check if the config already exists on disk
@@ -258,9 +289,7 @@ export async function regen(name: string): Promise<AwgConfigResult> {
  * Retrieves the list of clients from `manage_amneziawg.sh list --json`.
  */
 export async function list(): Promise<AwgClient[]> {
-  const script = getScriptPath();
-  const scriptDir = path.dirname(script);
-  const out = await $`${script} list --json`.cwd(scriptDir).text();
+  const out = await execAwg(["list", "--json"]);
   const res = parseJsonOutput(out);
   let rawList: any[] = [];
 
@@ -286,9 +315,7 @@ export async function list(): Promise<AwgClient[]> {
  * Retrieves traffic and interface stats from `manage_amneziawg.sh stats --json`.
  */
 export async function stats(): Promise<AwgStatsResult> {
-  const script = getScriptPath();
-  const scriptDir = path.dirname(script);
-  const out = await $`${script} stats --json`.cwd(scriptDir).text();
+  const out = await execAwg(["stats", "--json"]);
   const res = parseJsonOutput(out);
 
   if (Array.isArray(res)) {
@@ -318,9 +345,7 @@ export async function stats(): Promise<AwgStatsResult> {
  * Returns plaintext output.
  */
 export async function check(): Promise<string> {
-  const script = getScriptPath();
-  const scriptDir = path.dirname(script);
-  const text = await $`${script} check`.cwd(scriptDir).text();
+  const text = await execAwg(["check"]);
   return text;
 }
 
@@ -331,7 +356,7 @@ export async function check(): Promise<string> {
 export async function backup(): Promise<AwgBackupResult> {
   const script = getScriptPath();
   const scriptDir = path.dirname(script);
-  const out = await $`${script} backup --json`.cwd(scriptDir).text();
+  const out = await execAwg(["backup", "--json"]);
   const res = parseJsonOutput(out);
 
   const rawPath =

@@ -746,6 +746,14 @@ console.log(`👤 Разрешенный ADMIN_ID: ${ADMIN_ID}`);
 console.log(`🌐 Хост проверки доступности: ${SERVER_HOST}`);
 console.log(`🔧 Скрипт AmneziaWG: ${awg.getScriptPath()}`);
 
+if (!awg.isUserRoot()) {
+  const currentUser = process.env.USER || "не root";
+  console.warn(`\n⚠️ ВНИМАНИЕ: Бот запущен от непривилегированного пользователя "${currentUser}"!`);
+  console.warn("Файлы конфигураций в /root/awg/ и сетевой стек WireGuard требуют прав суперпользователя.");
+  console.warn("Для стабильной работы запустите через sudo или от пользователя root:");
+  console.warn("  sudo bun run src/index.ts  (или sudo systemctl start awg-bot)\n");
+}
+
 bot.start({
   onStart: (botInfo) => {
     console.log(`✅ Бот @${botInfo.username} успешно запущен и готов к работе!`);
